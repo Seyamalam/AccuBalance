@@ -38,9 +38,15 @@ $averages_query = "
     GROUP BY category";
 $averages = $conn->query($averages_query);
 
-// Get spending anomalies
+// Get spending anomalies using subqueries instead of CTEs
 $anomalies_query = "
-    WITH monthly_totals AS (
+    SELECT 
+        m.month,
+        m.category,
+        m.total,
+        s.avg_spend,
+        ((m.total - s.avg_spend) / NULLIF(s.std_dev, 0)) as z_score
+    FROM (
         SELECT 
             DATE_FORMAT(transaction_date, '%Y-%m') as month,
             category,
@@ -51,23 +57,28 @@ $anomalies_query = "
         AND t.type = 'expense'
         AND transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 3 MONTH)
         GROUP BY month, category
-    ),
-    category_stats AS (
+    ) m
+    JOIN (
         SELECT 
             category,
-            AVG(total) as avg_spend,
-            STDDEV(total) as std_dev
-        FROM monthly_totals
+            AVG(monthly_total) as avg_spend,
+            STDDEV(monthly_total) as std_dev
+        FROM (
+            SELECT 
+                DATE_FORMAT(transaction_date, '%Y-%m') as month,
+                category,
+                SUM(amount) as monthly_total
+            FROM transactions t
+            JOIN accounts a ON t.account_id = a.id
+            WHERE a.user_id = " . $_SESSION['user_id'] . "
+            AND t.type = 'expense'
+            AND transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 3 MONTH)
+            GROUP BY month, category
+        ) monthly_data
         GROUP BY category
-    )
-    SELECT 
-        mt.*,
-        cs.avg_spend,
-        ((mt.total - cs.avg_spend) / NULLIF(cs.std_dev, 0)) as z_score
-    FROM monthly_totals mt
-    JOIN category_stats cs ON mt.category = cs.category
+    ) s ON m.category = s.category
     HAVING ABS(z_score) > 2
-    ORDER BY month DESC, ABS(z_score) DESC";
+    ORDER BY m.month DESC, ABS(z_score) DESC";
 $anomalies = $conn->query($anomalies_query);
 if ($anomalies === false) {
     die("Error executing anomalies query: " . $conn->error);
@@ -75,7 +86,12 @@ if ($anomalies === false) {
 
 // Calculate predicted expenses for next month
 $predictions_query = "
-    WITH monthly_trends AS (
+    SELECT 
+        category,
+        avg_amount,
+        transaction_count,
+        (avg_amount + (std_dev * 0.5)) as predicted_amount
+    FROM (
         SELECT 
             category,
             AVG(amount) as avg_amount,
@@ -87,15 +103,12 @@ $predictions_query = "
         AND t.type = 'expense'
         AND transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
         GROUP BY category
-    )
-    SELECT 
-        category,
-        avg_amount,
-        transaction_count,
-        (avg_amount + (std_dev * 0.5)) as predicted_amount
-    FROM monthly_trends
+    ) as monthly_trends
     ORDER BY predicted_amount DESC";
 $predictions = $conn->query($predictions_query);
+if ($predictions === false) {
+    die("Error executing predictions query: " . $conn->error);
+}
 
 // Get savings potential
 $savings_query = "
@@ -123,10 +136,57 @@ if ($anomalies && $anomalies->num_rows > 0) {
     $anomalies_count = 0;
 }
 
-// Add error checking for performance data
+// Calculate performance metrics
+$performance_query = "
+    SELECT 
+        DATE_FORMAT(t.transaction_date, '%Y-%m') as month,
+        SUM(CASE WHEN t.type = 'income' THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN t.type = 'expense' THEN amount ELSE 0 END) as expenses,
+        SUM(CASE WHEN t.type = 'income' THEN amount ELSE -amount END) as net_flow,
+        COUNT(*) as transaction_count
+    FROM transactions t
+    JOIN accounts a ON t.account_id = a.id
+    WHERE a.user_id = " . $_SESSION['user_id'] . "
+    AND t.transaction_date >= DATE_SUB(CURRENT_DATE, INTERVAL 6 MONTH)
+    GROUP BY month
+    ORDER BY month DESC";
+
 $performance = $conn->query($performance_query);
 if ($performance === false) {
     die("Error executing performance query: " . $conn->error);
+}
+
+// Set default values if no performance data
+if ($performance->num_rows === 0) {
+    $performance_data = [
+        'current_month_income' => 0,
+        'current_month_expenses' => 0,
+        'current_month_net' => 0,
+        'avg_monthly_income' => 0,
+        'avg_monthly_expenses' => 0,
+        'trend' => 'neutral'
+    ];
+} else {
+    $performance_data = [];
+    $total_income = 0;
+    $total_expenses = 0;
+    $months = 0;
+    
+    while ($row = $performance->fetch_assoc()) {
+        if ($months === 0) {
+            $performance_data['current_month_income'] = $row['income'];
+            $performance_data['current_month_expenses'] = $row['expenses'];
+            $performance_data['current_month_net'] = $row['net_flow'];
+        }
+        $total_income += $row['income'];
+        $total_expenses += $row['expenses'];
+        $months++;
+    }
+    
+    $performance_data['avg_monthly_income'] = $months > 0 ? $total_income / $months : 0;
+    $performance_data['avg_monthly_expenses'] = $months > 0 ? $total_expenses / $months : 0;
+    $performance_data['trend'] = $performance_data['current_month_net'] > 0 ? 'positive' : 
+        ($performance_data['current_month_net'] < 0 ? 'negative' : 'neutral');
 }
 ?>
 

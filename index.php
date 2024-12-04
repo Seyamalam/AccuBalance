@@ -225,19 +225,19 @@ $is_logged_in = isset($_SESSION['user_id']);
                         'name' => 'Sarah Johnson',
                         'role' => 'Small Business Owner',
                         'content' => 'AccuBalance has transformed how I manage both personal and business finances. The insights are invaluable.',
-                        'image' => 'assets/logo.png'
+                        'image' => '/profileUser.png'
                     ],
                     [
                         'name' => 'Michael Chen',
                         'role' => 'Software Engineer',
                         'content' => 'The AI-powered features and clean interface make financial management actually enjoyable!',
-                        'image' => 'assets/profileUser.png'
+                        'image' => '/profileUser.png'
                     ],
                     [
                         'name' => 'Emily Rodriguez',
                         'role' => 'Freelancer',
                         'content' => 'Finally found a solution that helps me track multiple income streams and expenses effortlessly.',
-                        'image' => 'assets/profileUser.png'
+                        'image' => '/profileUser.png'
                     ]
                 ];
 
